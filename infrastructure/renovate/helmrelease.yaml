@@ -27,6 +27,14 @@ spec:
       concurrencyPolicy: Forbid
       successfulJobsHistoryLimit: 3
       failedJobsHistoryLimit: 5
+      envFrom:
+        - secretRef:
+            name: "renovate-env"
+
+    envFrom:
+      - secretRef:
+          name: "renovate-env"
+
 
     renovate:
       platform: "github"
