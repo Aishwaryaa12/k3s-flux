@@ -28,12 +28,18 @@ spec:
       successfulJobsHistoryLimit: 3
       failedJobsHistoryLimit: 5
 
+    existingSecret: "renovate-env"
+    envFrom:
+      - secretRef:
+          name: "renovate-env"
+
     extraEnv:
       - name: RENOVATE_TOKEN
         valueFrom:
           secretKeyRef:
             name: "renovate-env"
             key: "RENOVATE_TOKEN"
+
 
     renovate:
       platform: "github"
