@@ -6,7 +6,9 @@ metadata:
   namespace: flux-system
 
 spec:
+  suspend: true
   interval: 1h
+
 
   sourceRef:
     kind: GitRepository
