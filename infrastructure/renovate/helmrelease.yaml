@@ -32,13 +32,15 @@ spec:
       platform: "github"
       logLevel: "info"
       existingSecret: "renovate-env"
-      autodiscover: false
+      autodiscover: true
+      autodiscoverFilter: "Aishwaryaa12/*"
       config: |
         {
           "extends": ["config:recommended"],
           "onboarding": true,
           "requireConfig": "optional"
         }
+
 
     resources:
       limits:
