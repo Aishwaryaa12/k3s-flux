@@ -53,7 +53,9 @@ spec:
           "extends": ["config:recommended"],
           "onboarding": true,
           "requireConfig": "optional",
-          "repositories": ["Aishwaryaa12/k3s-flux"]
+          "repositories": ["Aishwaryaa12/k3s-flux"],
+          "minimumReleaseAge": "48 hours"
+
 
         }
 
