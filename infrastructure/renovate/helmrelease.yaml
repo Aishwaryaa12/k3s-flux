@@ -53,9 +53,9 @@ spec:
           "extends": ["config:recommended"],
           "onboarding": true,
           "requireConfig": "optional",
-          "autodiscover": true,
-          "autodiscoverFilter": "Aishwaryaa12/*"
+          "repositories": ["Aishwaryaa12/flux-gitops"]
         }
+
 
 
 
