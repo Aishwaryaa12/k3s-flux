@@ -9,3 +9,5 @@ resources:
   - logging
   - gateway
   - flux-image
+  - renovate
+

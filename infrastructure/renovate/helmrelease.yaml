@@ -1,0 +1,49 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: renovate
+  namespace: flux-system
+
+spec:
+  interval: 1h
+
+  chart:
+    spec:
+      chart: renovate
+      version: "*"
+      sourceRef:
+        kind: HelmRepository
+        name: renovate
+        namespace: flux-system
+
+  targetNamespace: renovate
+
+  install:
+    createNamespace: true
+
+  values:
+    cronjob:
+      schedule: "0 * * * *"
+      concurrencyPolicy: Forbid
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 5
+
+    renovate:
+      platform: "github"
+      logLevel: "info"
+      existingSecret: "renovate-env"
+      autodiscover: false
+      config: |
+        {
+          "extends": ["config:recommended"],
+          "onboarding": true,
+          "requireConfig": "optional"
+        }
+
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
