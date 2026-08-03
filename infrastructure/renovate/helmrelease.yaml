@@ -34,7 +34,11 @@ spec:
       existingSecret: "renovate-env"
       autodiscover: true
       autodiscoverFilter: "Aishwaryaa12/*"
+      envFrom:
+        - secretRef:
+            name: "renovate-env"
       config: |
+
         {
           "extends": ["config:recommended"],
           "onboarding": true,
