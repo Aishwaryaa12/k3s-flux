@@ -27,25 +27,21 @@ spec:
       concurrencyPolicy: Forbid
       successfulJobsHistoryLimit: 3
       failedJobsHistoryLimit: 5
-      envFrom:
-        - secretRef:
+
+    extraEnv:
+      - name: RENOVATE_TOKEN
+        valueFrom:
+          secretKeyRef:
             name: "renovate-env"
-
-    envFrom:
-      - secretRef:
-          name: "renovate-env"
-
+            key: "RENOVATE_TOKEN"
 
     renovate:
       platform: "github"
       logLevel: "info"
-      existingSecret: "renovate-env"
       autodiscover: true
       autodiscoverFilter: "Aishwaryaa12/*"
-      envFrom:
-        - secretRef:
-            name: "renovate-env"
       config: |
+
 
         {
           "extends": ["config:recommended"],
