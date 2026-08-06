@@ -1,5 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "minimumReleaseAge": "48 hours"
+  "minimumReleaseAge": "48 hours",
+  "flux": {
+    "fileMatch": [
+      "(?:^|/)apps/.+\\.yaml$",
+      "(?:^|/)infrastructure/.+\\.yaml$",
+      "(?:^|/)clusters/.+\\.yaml$"
+    ]
+  }
 }
