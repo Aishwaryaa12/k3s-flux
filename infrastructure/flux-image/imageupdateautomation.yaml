@@ -6,9 +6,7 @@ metadata:
   namespace: flux-system
 
 spec:
-  suspend: true
   interval: 1h
-
 
   sourceRef:
     kind: GitRepository
@@ -29,6 +27,9 @@ spec:
 
     push:
       branch: main
+
+    secretRef:
+      name: flux-image-automation
 
   update:
     strategy: Setters

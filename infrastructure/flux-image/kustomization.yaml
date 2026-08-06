@@ -6,4 +6,5 @@ resources:
   - imagerepository-linkding.yaml
   - imagepolicy-vaultwarden.yaml
   - imagepolicy-linkding.yaml
+  - imageupdateautomation.yaml
 
