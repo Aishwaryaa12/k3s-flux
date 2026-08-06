@@ -11,6 +11,7 @@
 - [Repository Structure](#repository-structure)
 - [GitOps Workflow](#gitops-workflow)
 - [Image Automation](#image-automation)
+- [Dependency Updates (Renovate)](#dependency-updates-renovate)
 - [Networking Architecture](#networking-architecture)
 - [Observability Stack](#observability-stack)
 - [Security Architecture](#security-architecture)
@@ -20,11 +21,14 @@
 ---
 ## Executive Summary
 
-This repository is the single source of truth for the Cloud-Native Kubernetes platform. It runs on a single-node k3s cluster on Debian 13, managed entirely by FluxCD. No resource is applied manually, namespaces, certificates, deployments, routing rules, secrets, and admission policies are all reconciled from this repository.
+This repository is the single source of truth for the Cloud-Native Kubernetes platform. It runs on a single-node k3s cluster on Debian 13, managed entirely by FluxCD. No resource is applied manually — namespaces, certificates, deployments, routing rules, secrets, and admission policies are all reconciled from this repository.
 
 The platform hosts two self-hosted workloads: **Vaultwarden** at `vault.cralyx.com` and **Linkding** at `linkding.cralyx.com`. Both are served over HTTPS via Traefik's Gateway API implementation, TLS-terminated with a wildcard Let's Encrypt certificate issued through Cloudflare DNS-01 challenge.
 
-Beyond basic application delivery, the platform runs a **closed-loop image update pipeline**: Flux scans Docker Hub hourly, evaluates new tags against semver range policies, and commits updated image references back to `main`  triggering its own reconciliation. Application updates are deployed without human intervention within the bounds of the defined policy.
+Beyond basic application delivery, the platform runs a **two-track automated update pipeline**:
+
+- **Flux Image Automation** handles container images (Vaultwarden, Linkding): the cluster scans Docker Hub hourly, evaluates new tags against semver range policies, and commits updated image references directly back to `main` — triggering its own reconciliation. Application image updates are deployed without human intervention within the bounds of the defined policy.
+- **Renovate Bot** handles Helm chart dependencies (cert-manager, Kyverno, Loki, Alloy, kube-prometheus-stack): it runs as a Kubernetes CronJob on an hourly schedule, detects outdated charts, and opens Pull Requests with a 48-hour minimum release age for stability. A human reviews and merges; Flux then reconciles.
 
 Secrets are encrypted with SOPS/Age and committed to the repository. Admission policies are enforced by Kyverno. Metrics and logs flow through kube-prometheus-stack, Loki, and Grafana Alloy into a unified Grafana dashboard. The result is a platform where state is always observable, always in Git, and always reproducible from a fresh OS install.
 
@@ -63,6 +67,7 @@ Secrets are encrypted with SOPS/Age and committed to the repository. Admission p
 | **Loki**                  | Log aggregation         | Label-indexed; pairs naturally with Kubernetes metadata; native Grafana integration                         |
 | **Grafana Alloy**         | Telemetry pipeline      | Unified replacement for Promtail and Grafana Agent; single DaemonSet for logs and metrics                   |
 | **Kyverno**               | Admission policies      | Native Kubernetes YAML policies; no Rego required; supports background scanning of existing resources       |
+| **Renovate Bot**          | Helm chart updates      | Self-hosted as a Kubernetes CronJob; opens PRs for outdated Helm charts with a configurable stability delay |
 | **SOPS + Age**            | Secret encryption       | Asymmetric encryption; Git-compatible diffs; no external secret store dependency                            |
 | **Vaultwarden**           | Password manager        | Self-hosted Bitwarden; critical personal infrastructure                                                     |
 | **Linkding**              | Bookmark manager        | Lightweight, minimal resource footprint                                                                     |
@@ -98,10 +103,16 @@ Secrets are encrypted with SOPS/Age and committed to the repository. Admission p
 │
 ├── infrastructure/                     # Platform components — owned by the platform
 │   ├── cert-manager/                   # HelmRelease, ClusterIssuer, wildcard Certificate, namespace
+│   ├── flux-image/                     # Image automation: ImageRepository, ImagePolicy, ImageUpdateAutomation
+│   │   ├── gitrepository-write.yaml    # Dedicated GitRepository using write SSH deploy key
+│   │   ├── imagerepository-*.yaml      # Polls Docker Hub for vaultwarden + linkding tags
+│   │   ├── imagepolicy-*.yaml          # Semver filter: 1.x range for both apps
+│   │   └── imageupdateautomation.yaml  # Commits new image tags to main via write key
 │   ├── gateway/                        # Gateway: traefik-gateway · *.cralyx.com
 │   ├── kyverno/                        # HelmRelease + namespace
 │   ├── logging/                        # Loki HelmRelease + Alloy HelmRelease + namespace
 │   ├── monitoring/                     # kube-prometheus-stack HelmRelease, Grafana TLS + routing
+│   ├── renovate/                       # Renovate Bot: HelmRepository + HelmRelease (CronJob)
 │   ├── traefik/                        # HelmChartConfig — enables Gateway API on k3s Traefik
 │   └── kustomization.yaml
 │
@@ -114,8 +125,12 @@ Secrets are encrypted with SOPS/Age and committed to the repository. Admission p
 ├── secrets/
 │   ├── cloudflare/
 │   │   └── api-token.yaml              # SOPS-encrypted Cloudflare API token
+│   ├── renovate/
+│   │   ├── namespace.yaml              # renovate namespace (created before infrastructure)
+│   │   └── renovate-secret.yaml        # SOPS-encrypted RENOVATE_TOKEN
 │   └── kustomization.yaml
 │
+├── renovate.json                       # Renovate config: explicit repo, 48h minimumReleaseAge
 └── .sops.yaml                          # Scope: secrets/**/*.yaml · fields: data + stringData only
 ```
 
@@ -130,8 +145,8 @@ The reconciliation order is enforced through `dependsOn` declarations in the clu
 
 ```mermaid
 graph LR
-    S["<b>secrets</b><br/>SOPS decrypt<br/>cloudflare-api-token"]
-    I["<b>infrastructure</b><br/>cert-manager · Traefik<br/>Kyverno · Prometheus<br/>Loki · Alloy"]
+    S["<b>secrets</b><br/>SOPS decrypt<br/>cloudflare-api-token<br/>renovate-token"]
+    I["<b>infrastructure</b><br/>cert-manager · Traefik<br/>Kyverno · Prometheus<br/>Loki · Alloy · Renovate"]
     A["<b>apps</b><br/>vaultwarden<br/>linkding"]
     P["<b>policies</b><br/>disallow-latest<br/>require-resources"]
 
@@ -175,12 +190,12 @@ sequenceDiagram
 
 ```
 
-`prune: true` is set on every Kustomization. Resources removed from Git are automatically deleted from the cluster on the next cycle, no manual cleanup, no resource accumulation over time.
+`prune: true` is set on every Kustomization. Resources removed from Git are automatically deleted from the cluster on the next cycle — no manual cleanup, no resource accumulation over time.
 
 ---
 ## Image Automation
 
-The image automation pipeline creates a fully closed update loop. New container versions are discovered, policy-evaluated, committed to Git, and deployed without any human action.
+The image automation pipeline creates a fully closed update loop for container images. New container versions are discovered, policy-evaluated, committed to Git, and deployed without any human action.
 
 ### The Setter Annotation
 
@@ -188,7 +203,7 @@ The `ImageUpdateAutomation` controller uses the `Setters` strategy, scanning the
 
 ```yaml
 # apps/vaultwarden/deployment.yaml
-image: vaultwarden/server:1.36.0 # {"$imagepolicy": "flux-system:vaultwarden"}
+image: vaultwarden/server:1.37.1 # {"$imagepolicy": "flux-system:vaultwarden"}
 
 # apps/linkding/deployment.yaml
 image: sissbruecker/linkding:1.45.0 # {"$imagepolicy": "flux-system:linkding"}
@@ -203,9 +218,70 @@ image: sissbruecker/linkding:1.45.0 # {"$imagepolicy": "flux-system:linkding"}
 
 The `1.x` upper bound is the deliberate control point. Major version bumps may carry breaking schema changes or data migration requirements. They require a human to review the changelog, update the policy range, and explicitly accept the upgrade.
 
+### Write Deploy Key
+
+`ImageUpdateAutomation` requires a writable Git credential to commit tag updates back to `main`. A dedicated SSH deploy key (`flux-image-automation`) is stored as a Kubernetes Secret in `flux-system` and registered on GitHub with **write access**. A separate `GitRepository/flux-system-write` references this secret — keeping the write credential isolated from the read-only `flux-system` GitRepository used for source syncing.
+
 ###### Relationship to Kyverno's `disallow-latest`
 
 Image automation and the Kyverno `disallow-latest` policy are mutually reinforcing. Automation ensures all production images carry pinned semver tags, exactly what the policy requires. Kyverno acts as an independent, synchronous check: if a `:latest` tag were ever committed manually, it generates an audit violation in `PolicyReport` before it could be acted on.
+
+---
+
+## Dependency Updates (Renovate)
+
+Renovate Bot handles Helm chart dependency updates — the part of the update pipeline that benefits from human review before deployment.
+
+### How It Works
+
+Renovate runs as a Kubernetes `CronJob` (via the `renovate/renovate` Helm chart) on an hourly schedule. Each run:
+
+1. Clones `Aishwaryaa12/k3s-flux`
+2. Extracts all Flux `HelmRelease` dependencies across `apps/`, `infrastructure/`, and `clusters/`
+3. Checks each chart version against the upstream Helm repository
+4. Opens a Pull Request for any chart with an available update — but only if the release is **at least 48 hours old**
+
+The 48-hour `minimumReleaseAge` is a stability gate: it prevents zero-day regressions from being automatically surfaced. If an upstream maintainer publishes and quickly yanks a broken release, Renovate will never surface it.
+
+### Tracked Dependencies
+
+| Chart | Helm Repository | Version Constraint |
+|---|---|---|
+| `cert-manager` | `jetstack` | `v1.18.*` |
+| `kube-prometheus-stack` | `prometheus-community` | `77.*` |
+| `kyverno` | `kyverno` | `3.*` |
+| `loki` | `grafana` | `6.*` |
+| `alloy` | `grafana` | `1.x` |
+| `renovate` | `renovatebot` | `*` (latest) |
+
+### Update Tracks: Renovate vs Image Automation
+
+| | **Renovate (Helm charts)** | **Flux Image Automation (containers)** |
+|--|--|--|
+| What it tracks | Helm chart versions | Docker image tags |
+| How updates arrive | Pull Request — reviewed and merged | Auto-commit directly to `main` |
+| Human gate | ✅ Yes | ❌ No |
+| Stability delay | 48 hours | None |
+| Scope | `infrastructure/` HelmReleases | `apps/` deployment image tags |
+
+### Renovate Config
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "48 hours",
+  "flux": {
+    "fileMatch": [
+      "(?:^|/)apps/.+\\.yaml$",
+      "(?:^|/)infrastructure/.+\\.yaml$",
+      "(?:^|/)clusters/.+\\.yaml$"
+    ]
+  }
+}
+```
+
+The `flux.fileMatch` pattern extends Renovate's default scanning to cover all YAML manifests under `apps/`, `infrastructure/`, and `clusters/` — not just the repository root.
 
 ---
 
@@ -243,11 +319,11 @@ graph TB
 
 ### Gateway API — Infrastructure vs Application Ownership
 
-The move from `Ingress` to Gateway API is an ownership boundary, not just an API upgrade. Platform engineers own the `Gateway`  what hostnames are exposed, on what ports, with what TLS configuration. Application owners own the `HTTPRoute`  how traffic to their hostname reaches their Service. Neither can override the other. The API enforces the boundary.
+The move from `Ingress` to Gateway API is an ownership boundary, not just an API upgrade. Platform engineers own the `Gateway` — what hostnames are exposed, on what ports, with what TLS configuration. Application owners own the `HTTPRoute` — how traffic to their hostname reaches their Service. Neither can override the other. The API enforces the boundary.
 
 `allowedRoutes.namespaces.from: All` is correct for a single-operator platform where every namespace is trusted. A multi-team environment would use `from: Selector` with namespace label constraints.
 
-**A non-obvious constraint:** k3s's Traefik maps named entrypoints (`web`, `websecure`) to internal ports `8000` and `8443`  not the external service ports `80` and `443`. Gateway API listeners must use the **internal entrypoint port**. Using `port: 443` in the listener spec causes listener validation to fail because Traefik's Gateway controller matches listeners by entrypoint port, not service port. The correct configuration is `port: 8443` in the Gateway listener with `hostPort: 443` in the `HelmChartConfig` the external port and the listener port are intentionally different.
+**A non-obvious constraint:** k3s's Traefik maps named entrypoints (`web`, `websecure`) to internal ports `8000` and `8443` — not the external service ports `80` and `443`. Gateway API listeners must use the **internal entrypoint port**. Using `port: 443` in the listener spec causes listener validation to fail because Traefik's Gateway controller matches listeners by entrypoint port, not service port. The correct configuration is `port: 8443` in the Gateway listener with `hostPort: 443` in the `HelmChartConfig` — the external port and the listener port are intentionally different.
 
 `hostPort` binds Traefik directly to the node's network interface, bypassing the need for a `LoadBalancer` Service or MetalLB.
 
@@ -275,13 +351,13 @@ graph TD
     style GRAF fill:#e65100,color:#fff
 ```
 
-**Prometheus** (via `kube-prometheus-stack`) scrapes metrics from all platform components Flux controllers, Traefik, Kyverno, node-level metrics via `node-exporter` using `PodMonitor` and `ServiceMonitor` resources for service discovery.
+**Prometheus** (via `kube-prometheus-stack`) scrapes metrics from all platform components — Flux controllers, Traefik, Kyverno, node-level metrics via `node-exporter` — using `PodMonitor` and `ServiceMonitor` resources for service discovery.
 
 **Grafana Alloy** runs as a `DaemonSet`, tailing container logs from every pod and enriching streams with Kubernetes metadata (`namespace`, `pod`, `container`) before forwarding to Loki. These labels become the primary dimensions for log queries, which maps naturally to how Kubernetes workloads are reasoned about during incidents.
 
-**Loki** stores logs in a label-indexed format. It does not perform full-text indexing, the query model is optimised for the label-scoped filtering that Kubernetes log analysis naturally uses.
+**Loki** stores logs in a label-indexed format. It does not perform full-text indexing — the query model is optimised for the label-scoped filtering that Kubernetes log analysis naturally uses.
 
-**Grafana** is the unified observability frontend with Prometheus and Loki configured as data sources. The logging and monitoring stacks are kept in separate namespaces (`logging` and `monitoring`) to allow independent lifecycle management, upgrading Loki does not require touching the Prometheus stack.
+**Grafana** is the unified observability frontend with Prometheus and Loki configured as data sources. The logging and monitoring stacks are kept in separate namespaces (`logging` and `monitoring`) to allow independent lifecycle management — upgrading Loki does not require touching the Prometheus stack.
 
 ---
 
@@ -304,11 +380,11 @@ graph TD
 
 ### Admission Control: Kyverno
 
-**`disallow-latest-tag`** rejects any Pod where a container uses the `:latest` image tag. Mutable tags make the running image unauditable, you cannot determine what code is running from the manifest, and you cannot roll back to a known state. All platform workloads satisfy this policy because image automation enforces pinned semver tags as process.
+**`disallow-latest-tag`** rejects any Pod where a container uses the `:latest` image tag. Mutable tags make the running image unauditable — you cannot determine what code is running from the manifest, and you cannot roll back to a known state. All platform workloads satisfy this policy because image automation enforces pinned semver tags as process.
 
 **`require-resource-requests-limits`** rejects any Pod where a container omits CPU or memory `requests` and `limits`. Without limits, a misbehaving container can exhaust node resources and starve every other workload. On a single-node cluster this means full platform outage.
 
-Both policies use `validationFailureAction: Audit` with `background: true`. Audit mode records violations in `PolicyReport` resources without blocking admission, the correct posture while infrastructure Helm charts are being audited for compliance. `background: true` re-evaluates existing resources continuously.
+Both policies use `validationFailureAction: Audit` with `background: true`. Audit mode records violations in `PolicyReport` resources without blocking admission — the correct posture while infrastructure Helm charts are being audited for compliance. `background: true` re-evaluates existing resources continuously.
 
 ```bash
 # Inspect current policy compliance across all namespaces
@@ -318,7 +394,7 @@ kubectl describe clusterpolicyreport
 
 ### TLS and Application Security
 
-All public endpoints are HTTPS-only. No HTTP application endpoint is exposed to the public internet. The wildcard certificate is issued and renewed by cert-manager automatically. Vaultwarden is configured with `SIGNUPS_ALLOWED=false` the instance accepts no new registrations and serves a known, fixed set of users.
+All public endpoints are HTTPS-only. No HTTP application endpoint is exposed to the public internet. The wildcard certificate is issued and renewed by cert-manager automatically. Vaultwarden is configured with `SIGNUPS_ALLOWED=false` — the instance accepts no new registrations and serves a known, fixed set of users.
 
 ---
 ## Architectural Decisions and Tradeoffs
@@ -328,7 +404,7 @@ All public endpoints are HTTPS-only. No HTTP application endpoint is exposed to 
 | k3s Built-in Traefik via `HelmChartConfig` | Avoids controller ownership conflicts with k3s's internal Helm controller. Reduces the total number of controllers running in the cluster. | Upgrades are tied directly to k3s releases. Uses a blunt `reinstall` failure policy rather than a graceful rollback mechanism. |
 | Wildcard Certificate (`*.cralyx.com`) | Frictionless iteration; adding a subdomain requires only an `HTTPRoute`. Avoids ACME rate limits and reduces secret management overhead to a single object. | Shared blast radius if the certificate is compromised. Constrains Gateway placement to co-locate with the TLS secret or requires a cross-namespace `ReferenceGrant`. |
 | SOPS/Age vs External Secrets Operator | Completely self-contained cluster capable of being reconstructed offline. No external runtime dependencies. Secret history is highly auditable in Git. | Key rotation is a bulk operation requiring re-encryption of all files. Lacks the per-access audit logging that a system like HashiCorp Vault provides. |
-| Image Automation Committing Directly to `main` | Eliminates manual toil for safe minor/patch updates within defined policy boundaries (e.g., `1.x`). Fulfills the goal of continuous, human-free reconciliation. | Removes the review gate between an upstream Docker Hub tag and a running container. A compromised upstream image could deploy automatically. |
+| Two-track update pipeline (Renovate + Image Automation) | Renovate provides a PR-gated review workflow with a 48-hour stability delay for Helm charts. Image Automation provides fully automated container image updates within bounded semver policies. Each track is matched to the risk profile of its target. | Container images deploy without review. A compromised upstream image within the `1.x` semver range could deploy automatically. Helm chart PRs require a human to be available to merge. |
 | Kyverno Policies in `Audit` Mode | Prevents strict `Enforce` policies from blocking third-party infrastructure Helm charts from coming up during the initial bootstrap phase. | Non-compliant pods can run without being blocked. Relies on the operator to actively review the `PolicyReport` and adjust values before flipping to `Enforce`. |
 
 ---
@@ -342,3 +418,4 @@ All public endpoints are HTTPS-only. No HTTP application endpoint is exposed to 
 | Single-node cluster | Add additional nodes and migrate to an HA control plane when availability becomes a requirement |
 | No image signature verification | Implement Cosign and Kyverno `verifyImages` policies |
 | No PVC backup strategy | Introduce Velero with an S3-compatible backend for backup and recovery |
+| Renovate covers only `Aishwaryaa12/k3s-flux` | Extend `repositories` list or enable `autodiscover` once additional repos are added |
