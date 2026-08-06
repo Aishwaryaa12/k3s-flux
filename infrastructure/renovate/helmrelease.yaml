@@ -28,39 +28,25 @@ spec:
       successfulJobsHistoryLimit: 3
       failedJobsHistoryLimit: 5
 
-    existingSecret: "renovate-env"
     envFrom:
       - secretRef:
-          name: "renovate-env"
-
-    extraEnv:
-      - name: RENOVATE_TOKEN
-        valueFrom:
-          secretKeyRef:
-            name: "renovate-env"
-            key: "RENOVATE_TOKEN"
-
+          name: renovate-env
 
     renovate:
-      platform: "github"
-      logLevel: "info"
-      autodiscover: true
-      autodiscoverFilter: "Aishwaryaa12/*"
       config: |
-
-
         {
-          "extends": ["config:recommended"],
+          "platform": "github",
+          "autodiscover": false,
+          "repositories": [
+            "Aishwaryaa12/k3s-flux"
+          ],
           "onboarding": true,
           "requireConfig": "optional",
-          "repositories": ["Aishwaryaa12/k3s-flux"],
+          "extends": [
+            "config:recommended"
+          ],
           "minimumReleaseAge": "48 hours"
-
-
         }
-
-
-
 
     resources:
       limits:
