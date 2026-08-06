@@ -1,0 +1,12 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: flux-system-write
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: ssh://git@github.com/Aishwaryaa12/flux-gitops
+  ref:
+    branch: main
+  secretRef:
+    name: flux-image-automation
