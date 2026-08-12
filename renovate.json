@@ -2,6 +2,10 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "minimumReleaseAge": "48 hours",
+  "ignorePaths": [
+    "clusters/production/flux-system/gotk-components.yaml",
+    "clusters/production/flux-system/gotk-sync.yaml"
+  ],
   "flux": {
     "fileMatch": [
       "(?:^|/)apps/.+\\.yaml$",
