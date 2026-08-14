@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: linkding
-          image: sissbruecker/linkding:1.46.0 # {"$imagepolicy": "flux-system:linkding"}
+          image: sissbruecker/linkding:1.46.1 # {"$imagepolicy": "flux-system:linkding"}
           resources:
             requests:
               cpu: 50m
